@@ -5,10 +5,13 @@ A Python application for monitoring Laravel log files in real-time with filterin
 ## Features
 
 - Real-time log file monitoring
+- Table-based log display with columns for Time, Type, and Message
+- Expandable details view showing full stack traces and JSON data
 - Filter logs by Laravel log levels (emergency, alert, critical, error, warning, notice, info, debug)
 - Start/Stop watching functionality
 - Clear display option
-- Modern Qt-based user interface
+- Empty log file option (with confirmation)
+- Modern Qt-based user interface with splitter for adjustable views
 
 ## Installation
 
@@ -42,13 +45,15 @@ The executable will be created in the `dist` directory.
 ## Usage
 
 1. Click "Select Log File" to choose your Laravel log file
-2. Use the checkboxes to filter specific log levels
+2. Use the checkboxes to filter specific log levels (filters update in real-time)
 3. Click "Start Watching" to begin monitoring the log file
-4. Use "Clear Display" to clear the log display
-5. Click "Stop Watching" to pause monitoring
+4. Click on any log entry to view its full details in the bottom panel
+5. Use "Clear Display" to clear the current view (doesn't affect the log file)
+6. Use "Empty Log" to delete all contents of the log file (requires confirmation)
+7. Click "Stop Watching" to pause monitoring
 
 ## Requirements
 
 - Python 3.7+
-- PyQt6
+- PyQt5
 - watchdog 
