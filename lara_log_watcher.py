@@ -11,6 +11,10 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import json
 
+# Constants
+RECENT_FILES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recent_files.json')
+MAX_RECENT_FILES = 10
+
 class LogEntry:
     def __init__(self, timestamp, level, message, details=None):
         self.timestamp = timestamp
@@ -92,6 +96,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Laravel Log Watcher")
         self.setMinimumSize(1200, 800)
         
+        # Load recent files
+        self.recent_files = self.load_recent_files()
+        
         # Main widget and layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -101,10 +108,21 @@ class MainWindow(QMainWindow):
         top_controls = QHBoxLayout()
         
         # File selection
-        self.file_path_label = QLabel("No file selected")
+        file_selection_layout = QVBoxLayout()
         select_file_btn = QPushButton("Select Log File")
         select_file_btn.clicked.connect(self.select_file)
-        top_controls.addWidget(select_file_btn)
+        file_selection_layout.addWidget(select_file_btn)
+        
+        # Recent files combo box
+        self.recent_files_combo = QComboBox()
+        self.recent_files_combo.addItem("Recent Files")
+        self.recent_files_combo.addItems(self.recent_files)
+        self.recent_files_combo.currentIndexChanged.connect(self.recent_file_selected)
+        file_selection_layout.addWidget(self.recent_files_combo)
+        
+        top_controls.addLayout(file_selection_layout)
+        
+        self.file_path_label = QLabel("No file selected")
         top_controls.addWidget(self.file_path_label)
         
         # Watch control
@@ -175,6 +193,57 @@ class MainWindow(QMainWindow):
         self.watching = False
         self.log_entries = []
     
+    def load_recent_files(self):
+        try:
+            if os.path.exists(RECENT_FILES_PATH):
+                with open(RECENT_FILES_PATH, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return []
+
+    def save_recent_files(self):
+        try:
+            with open(RECENT_FILES_PATH, 'w') as f:
+                json.dump(self.recent_files, f)
+        except Exception as e:
+            print(f"Error saving recent files: {e}")
+
+    def add_recent_file(self, file_path):
+        if file_path in self.recent_files:
+            self.recent_files.remove(file_path)
+        self.recent_files.insert(0, file_path)
+        if len(self.recent_files) > MAX_RECENT_FILES:
+            self.recent_files = self.recent_files[:MAX_RECENT_FILES]
+        self.save_recent_files()
+        
+        # Update combo box
+        self.recent_files_combo.clear()
+        self.recent_files_combo.addItem("Recent Files")
+        self.recent_files_combo.addItems(self.recent_files)
+
+    def recent_file_selected(self, index):
+        if index > 0 and self.recent_files_combo.currentText() != "Recent Files":
+            file_path = self.recent_files_combo.currentText()
+            if os.path.exists(file_path):
+                self.set_current_file(file_path)
+            else:
+                QMessageBox.warning(self, "Warning", f"File not found:\n{file_path}")
+                self.recent_files.remove(file_path)
+                self.save_recent_files()
+                self.recent_files_combo.removeItem(index)
+
+    def set_current_file(self, file_path):
+        self.current_file = file_path
+        self.file_path_label.setText(os.path.basename(file_path))
+        self.watch_btn.setEnabled(True)
+        self.add_recent_file(file_path)
+        
+        # If already watching, restart with new file
+        if self.watching:
+            self.stop_watching()
+            self.start_watching()
+
     def select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -184,14 +253,7 @@ class MainWindow(QMainWindow):
         )
         
         if file_path:
-            self.current_file = file_path
-            self.file_path_label.setText(os.path.basename(file_path))
-            self.watch_btn.setEnabled(True)
-            
-            # If already watching, restart with new file
-            if self.watching:
-                self.stop_watching()
-                self.start_watching()
+            self.set_current_file(file_path)
     
     def update_filters(self):
         active_filters = [level for level, checkbox in self.filter_checks.items()
@@ -255,9 +317,19 @@ class MainWindow(QMainWindow):
             row = selected_rows[0].row()
             entry = self.log_entries[row]
             if entry.details:
-                self.details_view.setText(entry.details)
+                # Format the details with proper line breaks and spacing
+                formatted_details = entry.details
+                if isinstance(formatted_details, str):
+                    try:
+                        # Try to parse and re-format JSON
+                        data = json.loads(formatted_details)
+                        formatted_details = json.dumps(data, indent=4)
+                    except json.JSONDecodeError:
+                        # If not JSON, preserve line breaks
+                        formatted_details = formatted_details.replace('\\n', '\n')
+                self.details_view.setPlainText(formatted_details)
             else:
-                self.details_view.setText("No additional details available")
+                self.details_view.setPlainText("No additional details available")
     
     def clear_display(self):
         self.log_table.setRowCount(0)
