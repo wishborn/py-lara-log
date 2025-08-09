@@ -12,8 +12,35 @@ from watchdog.events import FileSystemEventHandler
 import json
 
 # Constants
-RECENT_FILES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recent_files.json')
 MAX_RECENT_FILES = 10
+
+# Legacy path for backward compatibility with older versions
+LEGACY_RECENT_FILES_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'recent_files.json'
+)
+
+def get_config_path():
+    """
+    Determine the path to the laralog.config file.
+
+    Why this function exists: The app previously stored recent files in
+    `recent_files.json` next to the script. We now need to store and
+    automatically update `laralog.config` in the same folder the LaraLog
+    executable is launched from. When running as a PyInstaller executable,
+    we use the executable's directory. During development, we use the
+    current working directory to mimic the behavior of "where it's fired from".
+    """
+    try:
+        # When frozen by PyInstaller, use the directory of the executable
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            # In development, prefer the current working directory
+            base_dir = os.getcwd()
+    except Exception:
+        base_dir = os.getcwd()
+
+    return os.path.join(base_dir, 'laralog.config')
 
 class LogEntry:
     def __init__(self, timestamp, level, message, details=None):
@@ -98,6 +125,8 @@ class MainWindow(QMainWindow):
         
         # Load recent files
         self.recent_files = self.load_recent_files()
+        # Persist any cleanup (e.g., deduplication, migration) immediately
+        self.save_recent_files()
         
         # Main widget and layout
         main_widget = QWidget()
@@ -194,27 +223,60 @@ class MainWindow(QMainWindow):
         self.log_entries = []
     
     def load_recent_files(self):
+        config_path = get_config_path()
+        # 1) Try the new config location first
         try:
-            if os.path.exists(RECENT_FILES_PATH):
-                with open(RECENT_FILES_PATH, 'r') as f:
-                    return json.load(f)
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    data = data if isinstance(data, list) else []
+                    return self._dedupe_and_trim(data)
         except Exception:
             pass
+
+        # 2) Fall back to legacy location (migrate if found)
+        try:
+            if os.path.exists(LEGACY_RECENT_FILES_PATH):
+                with open(LEGACY_RECENT_FILES_PATH, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    data = data if isinstance(data, list) else []
+                data = self._dedupe_and_trim(data)
+                # Save immediately to the new location to migrate
+                try:
+                    with open(config_path, 'w', encoding='utf-8') as nf:
+                        json.dump(data, nf)
+                    # Migration successful; attempt to remove legacy file
+                    try:
+                        os.remove(LEGACY_RECENT_FILES_PATH)
+                    except Exception:
+                        pass
+                except Exception:
+                    # Ignore write errors; we can still proceed in-memory
+                    pass
+                return data
+        except Exception:
+            pass
+
         return []
 
     def save_recent_files(self):
+        config_path = get_config_path()
         try:
-            with open(RECENT_FILES_PATH, 'w') as f:
-                json.dump(self.recent_files, f)
+            # Always save a cleaned, trimmed list
+            cleaned = self._dedupe_and_trim(self.recent_files)
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(cleaned, f)
+            self.recent_files = cleaned
         except Exception as e:
             print(f"Error saving recent files: {e}")
 
     def add_recent_file(self, file_path):
-        if file_path in self.recent_files:
-            self.recent_files.remove(file_path)
+        # Remove any existing entries that match this path (case-insensitive on Windows)
+        target_key = self._normalize_path(file_path)
+        self.recent_files = [p for p in self.recent_files if self._normalize_path(p) != target_key]
+        # Insert at the top and persist
         self.recent_files.insert(0, file_path)
-        if len(self.recent_files) > MAX_RECENT_FILES:
-            self.recent_files = self.recent_files[:MAX_RECENT_FILES]
+        self.recent_files = self._dedupe_and_trim(self.recent_files)
         self.save_recent_files()
         
         # Update combo box
@@ -229,9 +291,44 @@ class MainWindow(QMainWindow):
                 self.set_current_file(file_path)
             else:
                 QMessageBox.warning(self, "Warning", f"File not found:\n{file_path}")
-                self.recent_files.remove(file_path)
+                # Remove all duplicates of this path and persist
+                target_key = self._normalize_path(file_path)
+                self.recent_files = [p for p in self.recent_files if self._normalize_path(p) != target_key]
                 self.save_recent_files()
                 self.recent_files_combo.removeItem(index)
+
+    def _normalize_path(self, path):
+        """
+        Normalize a filesystem path for duplicate comparisons.
+
+        Why this function exists: Windows paths are case-insensitive and may
+        vary in separators. Normalization ensures we prevent duplicates even if
+        the same path is represented with different case or slashes.
+        """
+        try:
+            return os.path.normcase(os.path.normpath(path))
+        except Exception:
+            return path
+
+    def _dedupe_and_trim(self, files):
+        """
+        Remove duplicate paths (case-insensitive on Windows) while preserving
+        order and enforce MAX_RECENT_FILES length.
+
+        Why this function exists: We need a single source of truth for recent
+        files without duplicates, and we must keep the list bounded.
+        """
+        seen = set()
+        unique = []
+        for p in files or []:
+            if not p:
+                continue
+            key = self._normalize_path(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(p)
+        return unique[:MAX_RECENT_FILES]
 
     def set_current_file(self, file_path):
         self.current_file = file_path
